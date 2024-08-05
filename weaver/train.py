@@ -220,9 +220,13 @@ def train_load(args):
     """
 
     train_file_dict, train_files = to_filelist(args, 'train')
+    if len(train_files) == 0:
+        raise RuntimeError('No files found for training!')
     if args.data_val:
         val_file_dict, val_files = to_filelist(args, 'val')
         train_range = val_range = (0, 1)
+        if len(val_files) == 0:
+            raise RuntimeError('No files found for validation!')
     else:
         val_file_dict, val_files = train_file_dict, train_files
         train_range = (0, args.train_val_split)
