@@ -611,6 +611,7 @@ def model_setup(args, data_config):
             # model_state = torch.load("/home/olympus/licq/hww/incl-train/weaver-core/weaver/model/ak8_MD_inclv8_part_addltphp_wmeasonly_manual.useamp.large.gm5.ddp-bs256-lr2e-3/net_best_epoch_state.pt", map_location='cpu')
             model_state = torch.load("/hwwtaggervol/hh4b/weights/glopartv2_base.pt")
             state_dict = model.state_dict()
+            print(f"{state_dict.keys()=}")
             if args.load_model_weights == 'finetune_stage2.0': # only takes the params 0-th layer after ft layer
                 state_dict[f'ft_mlp.0.0.weight'].copy_(model_state[f'part.fc.0.0.weight'].data)
                 state_dict[f'ft_mlp.0.0.bias'].copy_(model_state[f'part.fc.0.0.bias'].data)
