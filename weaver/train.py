@@ -1019,7 +1019,6 @@ def _main(args):
             try:
                 model.load_state_dict(torch.load(model_path, map_location=dev))
             except FileNotFoundError as e:
-                import os
                 model_dir = os.path.dirname(model_path)
                 # check if directory exists
                 if not os.path.exists(model_dir):
