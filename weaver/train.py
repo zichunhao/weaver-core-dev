@@ -856,7 +856,7 @@ def _main(args):
     else:
         gpus = None
         dev = torch.device('cpu')
-    
+
     # torch configs
     if torch.__version__.startswith('2.'):
         torch.set_float32_matmul_precision('high')
@@ -963,8 +963,14 @@ def _main(args):
                         _logger.info('Waiting for model %s to be ready...' % (args.model_prefix + '_epoch-%d_state.pt' % epoch))
                         time.sleep(10)
                     time.sleep(10)
-                    model.load_state_dict(torch.load(args.model_prefix + '_epoch-%d_state.pt' % epoch, map_location=dev))
-
+                    try:
+                        model.load_state_dict(torch.load(args.model_prefix + '_epoch-%d_state.pt' % epoch, map_location=dev))
+                    except RuntimeError as e:
+                        _logger.error(f'Error loading model: {e}')
+                        _logger.info('Remove the "module." prefix from the state_dict')
+                        state_dict = torch.load(args.model_prefix + '_epoch-%d_state.pt' % epoch, map_location=dev)
+                        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+                        model.load_state_dict(state_dict)
                 valid_metric = evaluate(model, val_loader, dev, epoch, loss_func=loss_func,
                                         steps_per_epoch=args.steps_per_epoch_val, tb_helper=tb)
                 # val_loader.dataset.restart_at_curr_pos()
@@ -991,12 +997,11 @@ def _main(args):
                 if valid_metric - train_loss > args.early_stop_dlr:
                     _logger.info('Early stop at epoch %d' % epoch)
                     break
-            
+
             if args.use_last_model:
                 if args.model_prefix and (args.backend is None or local_rank == 0):
                     shutil.copy2(args.model_prefix + '_epoch-%d_state.pt' %
                                 epoch, args.model_prefix + '_best_epoch_state.pt')
-
 
     if args.data_test:
         if args.backend is not None and local_rank != 0:
