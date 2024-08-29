@@ -967,7 +967,7 @@ def _main(args):
                         model.load_state_dict(torch.load(args.model_prefix + '_epoch-%d_state.pt' % epoch, map_location=dev))
                     except RuntimeError:
                         state_dict = torch.load(args.model_prefix + '_epoch-%d_state.pt' % epoch, map_location=dev)
-                        if not isinstance(model, torch.nn.parallel.DistributedDataParallel):
+                        if (args.gpus) and (args.backend is not None) and (not isinstance(model, torch.nn.parallel.DistributedDataParallel)):
                             _logger.info("Wrapping model in DistributedDataParallel")
                             model = torch.nn.parallel.DistributedDataParallel(
                                 model, device_ids=gpus, output_device=local_rank
