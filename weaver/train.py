@@ -965,12 +965,19 @@ def _main(args):
                     time.sleep(10)
                     try:
                         model.load_state_dict(torch.load(args.model_prefix + '_epoch-%d_state.pt' % epoch, map_location=dev))
-                    except RuntimeError as e:
-                        _logger.error(f'Error loading model: {e}')
-                        _logger.info('Remove the "module." prefix from the state_dict')
+                    except RuntimeError:
                         state_dict = torch.load(args.model_prefix + '_epoch-%d_state.pt' % epoch, map_location=dev)
-                        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-                        model.load_state_dict(state_dict)
+                        if not isinstance(model, torch.nn.parallel.DistributedDataParallel):
+                            _logger.info("Wrapping model in DistributedDataParallel")
+                            model = torch.nn.parallel.DistributedDataParallel(
+                                model, device_ids=gpus, output_device=local_rank
+                            )
+                            model.load_state_dict(state_dict)
+                        else:
+                            # If it's already wrapped and still fails, we need to modify the state dict
+                            _logger.info("Modifying state dict keys")
+                            new_state_dict = {"module." + k: v for k, v in state_dict.items() if not k.startswith("module.")}
+                            model.load_state_dict(new_state_dict)
                 valid_metric = evaluate(model, val_loader, dev, epoch, loss_func=loss_func,
                                         steps_per_epoch=args.steps_per_epoch_val, tb_helper=tb)
                 # val_loader.dataset.restart_at_curr_pos()
