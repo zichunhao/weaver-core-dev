@@ -16,6 +16,8 @@ from utils.logger import _logger, _configLogger
 from utils.dataset import SimpleIterDataset
 from utils.import_tools import import_module
 
+torch.autograd.set_detect_anomaly(True)
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--train-mode', type=str, default='cls',
                     choices=['cls', 'regression', 'hybrid', 'custom'],
@@ -61,6 +63,8 @@ parser.add_argument('--file-fraction', type=float, default=1,
 parser.add_argument('--fetch-by-files', action='store_true', default=False,
                     help='When enabled, will load all events from a small number (set by ``--fetch-step``) of files for each data fetching. '
                          'Otherwise (default), load a small fraction of events from all files each time, which helps reduce variations in the sample composition.')
+parser.add_argument('--test-fetch-by-files-threshold', type=int, default=5 * 1024 * 1024 * 1024,
+                    help='threshold (in bytes) to determine whether to load all events from all files or a fraction of events from all files for testing. Deafult: 5GB')
 parser.add_argument('--fetch-step', type=float, default=0.01,
                     help='fraction of events to load each time from every file (when ``--fetch-by-files`` is disabled); '
                          'Or: number of files to load each time (when ``--fetch-by-files`` is enabled). Shuffling & sampling is done within these events, so set a large enough value.')
@@ -313,20 +317,57 @@ def test_load(args):
         for i in range((len(files) + split - 1) // split):
             file_dict[f'{name}_{i}'] = files[i * split:(i + 1) * split]
 
-    def get_test_loader(name):
+    def get_test_loader(name, size_threshold=5 * 1024 * 1024 * 1024):
         filelist = file_dict[name]
         _logger.info('Running on test file group %s with %d files:\n...%s', name, len(filelist), '\n...'.join(filelist))
         num_workers = min(args.num_workers, len(filelist))
-        test_data = SimpleIterDataset({name: filelist}, args.data_config, for_training=False,
-                                      load_range_and_fraction=(tuple(args.test_range), args.data_fraction, args.data_split_group),
-                                    #   fetch_by_files=True, fetch_step=1,
-                                      fetch_by_files=False, fetch_step=0.01,
-                                      name='test_' + name)
+        _logger.info(f"Using {num_workers} workers for test data loading")
+        _logger.info(f"Instantiating test dataset for {name}")
+        # check the total size of the test dataset
+        total_size = 0
+        for f in filelist:
+            total_size += os.path.getsize(f)
+        if total_size < size_threshold:
+            _logger.info(
+                f"Small dataset: {total_size / 1024 / 1024:.2f} MB < {size_threshold / 1024 / 1024:.2f} MB; load all events from all files"
+            )
+            # small dataset, load all events from all files
+            test_data = SimpleIterDataset(
+                {name: filelist},
+                args.data_config,
+                for_training=False,
+                load_range_and_fraction=(
+                    tuple(args.test_range),
+                    args.data_fraction,
+                    args.data_split_group,
+                ),
+                fetch_by_files=True,
+                fetch_step=1,
+                name="test_" + name,
+            )
+        else:
+            _logger.info(f"Large dataset: {total_size / 1024 / 1024:.2f} MB >= {size_threshold / 1024 / 1024:.2f} MB; load a fraction of events from all files")
+            # large dataset, load a fraction of events from all files
+            test_data = SimpleIterDataset(
+                {name: filelist},
+                args.data_config,
+                for_training=False,
+                load_range_and_fraction=(
+                    tuple(args.test_range),
+                    args.data_fraction,
+                    args.data_split_group,
+                ),
+                fetch_by_files=False,
+                fetch_step=0.1,
+                name="test_" + name,
+            )
+        _logger.info(f"Instantiating test dataloader for {name} with batch_size={args.batch_size}")
         test_loader = DataLoader(test_data, num_workers=num_workers, batch_size=args.batch_size, drop_last=False,
                                  pin_memory=True)
         return test_loader
 
-    test_loaders = {name: functools.partial(get_test_loader, name) for name in file_dict}
+    size_threshold = args.test_fetch_by_files_threshold
+    test_loaders = {name: functools.partial(get_test_loader, name, size_threshold) for name in file_dict}
     data_config = SimpleIterDataset({}, args.data_config, for_training=False).config
     return test_loaders, data_config
 
@@ -376,8 +417,12 @@ def flops(model, model_info):
     model = copy.deepcopy(model).cpu()
     model.eval()
 
+    _logger.info(f"Counting FLOPs and number of parameters for model {model.__class__.__name__}")
+    _logger.debug(f"Model info: {model_info}")
     inputs = tuple(
-        torch.ones(model_info['input_shapes'][k], dtype=torch.float32) for k in model_info['input_names'])
+        torch.ones(model_info["input_shapes"][k], dtype=torch.float32)
+        for k in model_info["input_names"]
+    )
 
     macs, params = get_model_complexity_info(model, inputs, as_strings=True, print_per_layer_stat=True, verbose=True)
     _logger.info('{:<30}  {:<8}'.format('Computational complexity: ', macs))
@@ -808,7 +853,6 @@ def save_parquet(args, output_path, scores, labels, observers):
     output.update(observers)
     ak.to_parquet(ak.Array(output), output_path, compression='LZ4', compression_level=4)
 
-
 def _main(args):
     _logger.info('args:\n - %s', '\n - '.join(str(it) for it in args.__dict__.items()))
 
@@ -873,6 +917,31 @@ def _main(args):
         return
 
     model, model_info, loss_func = model_setup(args, data_config)
+
+    # Detect NaN        
+    def hook_anomaly(module, input, output):
+        def check_tensor(x, tensor_name):
+            if isinstance(x, torch.Tensor):
+                if torch.isnan(x).any():
+                    raise RuntimeError(f"NaN detected in {module.__class__.__name__}, {tensor_name}")
+                if torch.isinf(x).any():
+                    raise RuntimeError(f"Inf detected in {module.__class__.__name__}, {tensor_name}")
+
+        def check_structure(x, name):
+            if isinstance(x, torch.Tensor):
+                check_tensor(x, name)
+            elif isinstance(x, tuple) or isinstance(x, list):
+                for i, item in enumerate(x):
+                    check_structure(item, f"{name}[{i}]")
+            elif isinstance(x, dict):
+                for k, v in x.items():
+                    check_structure(v, f"{name}['{k}']")
+
+        check_structure(input, "input")
+        check_structure(output, "output")
+
+    for name, module in model.named_modules():
+        module.register_forward_hook(hook_anomaly)
 
     # TODO: load checkpoint
     # if args.backend is not None:
@@ -1048,13 +1117,16 @@ def _main(args):
             model = model.to(dev)
 
         for name, get_test_loader in test_loaders.items():
+            _logger.info(f'Getting test loader for {name}')
             test_loader = get_test_loader()
+            _logger.info(f'Loaded test loader for {name}')
             # run prediction
             if args.model_prefix.endswith('.onnx'):
                 _logger.info('Loading model %s for eval' % args.model_prefix)
                 from utils.nn.tools import evaluate_onnx
                 test_metric, scores, labels, observers = evaluate_onnx(args.model_prefix, test_loader)
             else:
+                _logger.info(f'Running evaluation on {name}')
                 test_metric, scores, labels, observers = evaluate(
                     model, test_loader, dev, epoch=None, for_training=False, tb_helper=tb)
             _logger.info('Test metric %.5f' % test_metric, color='bold')
@@ -1125,7 +1197,8 @@ def main():
             args.tensorboard += '.%03d' % args.local_rank
         if args.local_rank != 0:
             stdout = None
-    _configLogger('weaver', stdout=stdout, filename=args.log_file)
+    import logging
+    _configLogger('weaver', stdout=stdout, filename=args.log_file, loglevel=logging.DEBUG)
 
     if args.seed != -1:
         _logger.info('Setting random seed to %d' % args.seed)
