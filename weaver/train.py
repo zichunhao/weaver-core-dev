@@ -148,6 +148,8 @@ parser.add_argument('--copy-inputs', action='store_true', default=False,
                     help='copy input files to the current dir (can help to speed up dataloading when running over remote files, e.g., from EOS)')
 parser.add_argument('--log-file', type=str, default='',
                     help='path to the log file; `{auto}` can be used as part of the path to auto-generate a name, based on the timestamp and network configuration')
+parser.add_argument('--log-level', type=str, default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                    help='log level')
 parser.add_argument('--print', action='store_true', default=False,
                     help='do not run training/prediction but only print model information, e.g., FLOPs and number of parameters of a model')
 parser.add_argument('--profile', action='store_true', default=False,
@@ -1197,8 +1199,7 @@ def main():
             args.tensorboard += '.%03d' % args.local_rank
         if args.local_rank != 0:
             stdout = None
-    import logging
-    _configLogger('weaver', stdout=stdout, filename=args.log_file, loglevel=logging.DEBUG)
+    _configLogger('weaver', stdout=stdout, filename=args.log_file, loglevel=args.log_level)
 
     if args.seed != -1:
         _logger.info('Setting random seed to %d' % args.seed)
