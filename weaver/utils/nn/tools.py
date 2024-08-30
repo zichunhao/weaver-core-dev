@@ -635,7 +635,6 @@ def evaluate_hybrid(model, test_loader, dev, epoch, for_training=True, loss_func
     with torch.no_grad():
         with tqdm.tqdm(test_loader) as tq:
             for X, y, Z in tq:
-                _logger.debug(f"{X.keys()=}, {y.keys()=}, {Z.keys()=}")
                 inputs = [X[k].to(dev) for k in data_config.input_names]
                 # for classification
                 label_cls = y['_label_'].long()
