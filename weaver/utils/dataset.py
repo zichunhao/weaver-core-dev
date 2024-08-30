@@ -84,7 +84,7 @@ def _preprocess(table, data_config, options):
     # apply selection
     table = _apply_selection(table, data_config.selection if options['training'] else data_config.test_time_selection)
     if len(table) == 0:
-        return []
+        return [], []
     # define new variables
     table = _build_new_variables(table, data_config.var_funcs)
     # check labels
@@ -106,7 +106,15 @@ def _preprocess(table, data_config, options):
 
 
 def _load_next(data_config, filelist, split_group_info, load_range, options):
-    table = _read_files(filelist[split_group_info[0]::split_group_info[1]], data_config.load_branches, load_range, treename=data_config.treename)
+    file_list = filelist[split_group_info[0]::split_group_info[1]]
+    branches = data_config.load_branches
+    treename = data_config.treename
+    try:
+        table = _read_files(file_list, branches, load_range, treename=treename)
+    except RuntimeError as e:
+        _logger.error(f"Failed to read files {file_list} with error: {e}")
+        _logger.error(f"Skipping these files and continue to the next batch.")
+        return [], []
     table, indices = _preprocess(table, data_config, options)
     return table, indices
 
@@ -255,6 +263,7 @@ class _SimpleIter(object):
         split_group_info = (self.isplit, self.split_group)
 
         _logger.info('Start fetching next batch, len(filelist)=%d, load_range=%s, split_group_info=%s'%(len(filelist), load_range, split_group_info))
+        _logger.debug(f"Fetching files: {filelist}")
         if self._async_load:
             if hasattr(self, 'executor'):
                 self.executor.shutdown(wait=False)
