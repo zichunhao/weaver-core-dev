@@ -69,4 +69,5 @@ def evaluate_metrics(y_true, y_score, eval_metrics=[]):
             results[metric] = None
             _logger.error(str(e))
             _logger.debug(traceback.format_exc())
+            _logger.debug(f"{y_true=}, {y_score=}")
     return results

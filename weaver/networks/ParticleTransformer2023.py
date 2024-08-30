@@ -391,8 +391,10 @@ class Block(nn.Module):
         if enable_mem_efficient:
             from weaver.utils.import_tools import import_module
             import os
+            _logger.debug('Using memory efficient multihead attention')
             MultiheadAttention = import_module(os.path.join(os.path.dirname(__file__), 'memory_efficient_attention.py'), 'memory_efficient_attention').MemoryEfficientMultiheadAttention
         else:
+            _logger.debug('Using standard multihead attention')
             MultiheadAttention = nn.MultiheadAttention
         self.attn = MultiheadAttention(
             embed_dim,
@@ -425,8 +427,8 @@ class Block(nn.Module):
             encoded output of shape `(seq_len, batch, embed_dim)`
         """
 
-        if not self.enable_mem_efficient:
-            padding_mask = torch.zeros_like(padding_mask, dtype=x.dtype).masked_fill(padding_mask, float('-inf'))
+        if self.enable_mem_efficient:
+            padding_mask = torch.zeros_like(padding_mask, dtype=x.dtype).masked_fill(padding_mask, -float('inf'))
         if x_cls is not None:
             with torch.no_grad():
                 # prepend one element for x_cls: -> (batch, 1+seq_len)
@@ -440,8 +442,10 @@ class Block(nn.Module):
         else:
             residual = x
             x = self.pre_attn_norm(x)
+            assert not torch.isnan(x).any(), f"{x=}"
             x = self.attn(x, x, x, key_padding_mask=padding_mask,
                           attn_mask=attn_mask, need_weights=False)[0]  # (seq_len, batch, embed_dim)
+            assert not torch.isnan(x).any(), f"{x=}"
 
         if self.c_attn is not None:
             tgt_len = x.size(0)

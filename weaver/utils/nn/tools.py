@@ -630,11 +630,12 @@ def evaluate_hybrid(model, test_loader, dev, epoch, for_training=True, loss_func
     labels_counts = []
     observers = defaultdict(list)
     start_time = time.time()
-    model_embed_output_array = []
-    label_cls_array = []
+    # model_embed_output_array = []
+    # label_cls_array = []
     with torch.no_grad():
         with tqdm.tqdm(test_loader) as tq:
             for X, y, Z in tq:
+                _logger.debug(f"{X.keys()=}, {y.keys()=}, {Z.keys()=}")
                 inputs = [X[k].to(dev) for k in data_config.input_names]
                 # for classification
                 label_cls = y['_label_'].long()
@@ -670,12 +671,14 @@ def evaluate_hybrid(model, test_loader, dev, epoch, for_training=True, loss_func
                     scores_reg.append(preds_reg.detach().cpu().numpy())
                     for k, v in y.items():
                         if k == '_label_':
-                            labels[k].append(_flatten_label(v, label_mask).cpu().numpy())
+                            labels[k].append(
+                                _flatten_label(v, label_mask).detach().cpu().numpy()
+                            )
                         else:
-                            labels[k].append(v.cpu().numpy())
+                            labels[k].append(v.detach().cpu().numpy())
                 if not for_training:
                     for k, v in Z.items():
-                        observers[k].append(v.cpu().numpy())
+                        observers[k].append(v.detach().cpu().numpy())
 
                 _, preds_cls = logits.max(1)
                 if loss_func is not None:
@@ -697,18 +700,21 @@ def evaluate_hybrid(model, test_loader, dev, epoch, for_training=True, loss_func
                 sqr_err = e.square().sum().item()
                 sum_sqr_err += sqr_err
 
-                tq.set_postfix({
-                    'Loss': '%.5f' % loss_monitor['cls'],
-                    'LossReg': '%.5f' % loss_monitor['reg'],
-                    'LossTot': '%.5f' % loss,
-                    'AvgLoss': '%.5f' % (total_loss / count),
-                    'Acc': '%.5f' % (correct / num_examples),
-                    'AvgAcc': '%.5f' % (total_correct / count),
-                    'MSE': '%.5f' % (sqr_err / num_examples),
-                    'AvgMSE': '%.5f' % (sum_sqr_err / count),
-                    'MAE': '%.5f' % (abs_err / num_examples),
-                    'AvgMAE': '%.5f' % (sum_abs_err / count),
-                })
+                info_dict = {
+                    "Loss": "%.5f" % loss_monitor["cls"],
+                    "LossReg": "%.5f" % loss_monitor["reg"],
+                    "LossTot": "%.5f" % loss,
+                    "AvgLoss": "%.5f" % (total_loss / count),
+                    "Acc": "%.5f" % (correct / num_examples),
+                    "AvgAcc": "%.5f" % (total_correct / count),
+                    "MSE": "%.5f" % (sqr_err / num_examples),
+                    "AvgMSE": "%.5f" % (sum_sqr_err / count),
+                    "MAE": "%.5f" % (abs_err / num_examples),
+                    "AvgMAE": "%.5f" % (sum_abs_err / count),
+                }
+
+                tq.set_postfix(info_dict)
+                _logger.debug(info_dict)
 
                 if tb_helper:
                     if tb_helper.custom_fn:
@@ -717,6 +723,7 @@ def evaluate_hybrid(model, test_loader, dev, epoch, for_training=True, loss_func
                                                 mode='eval' if for_training else 'test')
 
                 if steps_per_epoch is not None and num_batches >= steps_per_epoch:
+                    _logger.info(f"(num_batches={num_batches}) >= (steps_per_epoch={steps_per_epoch}). Break.")
                     break
 
     time_diff = time.time() - start_time

@@ -86,7 +86,11 @@ class LogCoshLoss(torch.nn.L1Loss):
             # calculate regression loss for each class separately
             # input: (N, C * n_reg), target_reg: (N, n_reg), target_cls: (N)
             n_reg = target_reg.shape[1]
-            input = input.view(-1, n_cls, n_reg)
+            try:
+                input = input.view(-1, n_cls, n_reg)
+            except RuntimeError as e:
+                _logger.error(f'Error in reshaping input: {input.shape=}, {n_cls=}, {n_reg=}')
+                raise e
             target_reg = target_reg.view(-1, 1, n_reg)
             target_cls = torch.nn.functional.one_hot(target_cls, num_classes=n_cls).bool().view(-1, n_cls, 1)
             x = input - target_reg # dim: (B, n_cls, n_reg)

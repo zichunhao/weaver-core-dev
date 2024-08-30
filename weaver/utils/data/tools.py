@@ -2,6 +2,7 @@ import numpy as np
 import math
 
 import awkward as ak
+from ..logger import _logger
 
 
 def _concat(arrays, axis=0):
@@ -42,6 +43,10 @@ def _pad(a, maxlen, value=0, dtype='float32'):
 
 def _repeat_pad(a, maxlen, shuffle=False, dtype='float32'):
     x = ak.to_numpy(ak.flatten(a))
+    if len(x) == 0:
+        # empty array: return a zero array
+        _logger.warning('Empty array in _repeat_pad; returning zero array')
+        return ak.values_astype(np.zeros((len(a), maxlen)), dtype)
     x = np.tile(x, int(np.ceil(len(a) * maxlen / len(x))))
     if shuffle:
         np.random.shuffle(x)
