@@ -63,8 +63,8 @@ parser.add_argument('--file-fraction', type=float, default=1,
 parser.add_argument('--fetch-by-files', action='store_true', default=False,
                     help='When enabled, will load all events from a small number (set by ``--fetch-step``) of files for each data fetching. '
                          'Otherwise (default), load a small fraction of events from all files each time, which helps reduce variations in the sample composition.')
-parser.add_argument('--test-fetch-by-files-threshold', type=int, default=5 * 1024 * 1024 * 1024,
-                    help='threshold (in bytes) to determine whether to load all events from all files or a fraction of events from all files for testing. Deafult: 5GB')
+parser.add_argument('--fetch-by-files-threshold', type=int, default=5 * 1024 * 1024 * 1024,
+                    help='threshold (in bytes) to determine whether to load all events from all files or a fraction of events from all files. Deafult: 5GB')
 parser.add_argument('--fetch-step', type=float, default=0.01,
                     help='fraction of events to load each time from every file (when ``--fetch-by-files`` is disabled); '
                          'Or: number of files to load each time (when ``--fetch-by-files`` is enabled). Shuffling & sampling is done within these events, so set a large enough value.')
@@ -254,24 +254,35 @@ def train_load(args):
     if args.in_memory and (args.steps_per_epoch is None or args.steps_per_epoch_val is None):
         raise RuntimeError('Must set --steps-per-epoch when using --in-memory!')
 
-    train_data = SimpleIterDataset(train_file_dict, args.data_config, for_training=True,
-                                   extra_selection=args.extra_selection,
-                                   load_range_and_fraction=(train_range, args.data_fraction, args.data_split_group),
-                                   file_fraction=args.file_fraction,
-                                   fetch_by_files=args.fetch_by_files,
-                                   fetch_step=args.fetch_step,
-                                   infinity_mode=args.steps_per_epoch is not None,
-                                   in_memory=args.in_memory,
-                                   name='train' + ('' if args.local_rank is None else '_rank%d' % args.local_rank))
-    val_data = SimpleIterDataset(val_file_dict, args.data_config, for_training=True,
-                                 extra_selection=args.extra_selection,
-                                 load_range_and_fraction=(val_range, args.data_fraction, args.data_split_group),
-                                 file_fraction=args.file_fraction,
-                                 fetch_by_files=args.fetch_by_files,
-                                 fetch_step=args.fetch_step,
-                                 infinity_mode=args.steps_per_epoch_val is not None,
-                                 in_memory=args.in_memory,
-                                 name='val' + ('' if args.local_rank is None else '_rank%d' % args.local_rank))
+    def get_dataset(file_dict, files, range, name, size_threshold=5 * 1024 * 1024 * 1024):
+        total_size = sum(os.path.getsize(f) for f in files)
+        if total_size < size_threshold:
+            fetch_by_files = True
+            fetch_step = 1
+            _logger.info(
+                f"Small dataset: {total_size / 1024 / 1024:.2f} MB < {size_threshold / 1024 / 1024:.2f} MB; load all events from all files"
+            )
+        else:
+            fetch_by_files = args.fetch_by_files
+            fetch_step = args.fetch_step
+            _logger.info(f"Large dataset: {total_size / 1024 / 1024:.2f} MB >= {size_threshold / 1024 / 1024:.2f} MB; keep the fetch_by_files={fetch_by_files} and fetch_step={fetch_step} settings")
+
+        return SimpleIterDataset(
+            file_dict, args.data_config, for_training=True,
+            extra_selection=args.extra_selection,
+            load_range_and_fraction=(range, args.data_fraction, args.data_split_group),
+            file_fraction=args.file_fraction,
+            fetch_by_files=fetch_by_files,
+            fetch_step=fetch_step,
+            infinity_mode=args.steps_per_epoch is not None,
+            in_memory=args.in_memory,
+            name=name + ('' if args.local_rank is None else f'_rank{args.local_rank}')
+        )
+
+    size_threshold = args.fetch_by_files_threshold
+    train_data = get_dataset(train_file_dict, train_files, train_range, 'train', size_threshold)
+    val_data = get_dataset(val_file_dict, val_files, val_range, 'val', size_threshold)
+
     train_loader = DataLoader(train_data, batch_size=args.batch_size, drop_last=True, pin_memory=True,
                               num_workers=min(args.num_workers, int(len(train_files) * args.file_fraction)),
                               persistent_workers=args.num_workers > 0 and args.steps_per_epoch is not None)
@@ -334,41 +345,33 @@ def test_load(args):
                 f"Small dataset: {total_size / 1024 / 1024:.2f} MB < {size_threshold / 1024 / 1024:.2f} MB; load all events from all files"
             )
             # small dataset, load all events from all files
-            test_data = SimpleIterDataset(
-                {name: filelist},
-                args.data_config,
-                for_training=False,
-                load_range_and_fraction=(
-                    tuple(args.test_range),
-                    args.data_fraction,
-                    args.data_split_group,
-                ),
-                fetch_by_files=True,
-                fetch_step=1,
-                name="test_" + name,
-            )
+            fetch_by_files = True
+            fetch_step = 1
         else:
-            _logger.info(f"Large dataset: {total_size / 1024 / 1024:.2f} MB >= {size_threshold / 1024 / 1024:.2f} MB; load a fraction of events from all files")
-            # large dataset, load a fraction of events from all files
-            test_data = SimpleIterDataset(
-                {name: filelist},
-                args.data_config,
-                for_training=False,
-                load_range_and_fraction=(
-                    tuple(args.test_range),
-                    args.data_fraction,
-                    args.data_split_group,
-                ),
-                fetch_by_files=False,
-                fetch_step=0.1,
-                name="test_" + name,
-            )
+            _logger.info(f"Large dataset: {total_size / 1024 / 1024:.2f} MB >= {size_threshold / 1024 / 1024:.2f} MB; follow the fetch_by_files={fetch_by_files} and fetch_step={fetch_step} settings")
+            # large dataset, follow the fetch_by_files and fetch_step settings
+            fetch_by_files = args.fetch_by_files
+            fetch_step = args.fetch_step
+
+        test_data = SimpleIterDataset(
+            {name: filelist},
+            args.data_config,
+            for_training=False,
+            load_range_and_fraction=(
+                tuple(args.test_range),
+                args.data_fraction,
+                args.data_split_group,
+            ),
+            fetch_by_files=fetch_by_files,
+            fetch_step=fetch_step,
+            name="test_" + name,
+        )
         _logger.info(f"Instantiating test dataloader for {name} with batch_size={args.batch_size}")
         test_loader = DataLoader(test_data, num_workers=num_workers, batch_size=args.batch_size, drop_last=False,
                                  pin_memory=True)
         return test_loader
 
-    size_threshold = args.test_fetch_by_files_threshold
+    size_threshold = args.fetch_by_files_threshold
     test_loaders = {name: functools.partial(get_test_loader, name, size_threshold) for name in file_dict}
     data_config = SimpleIterDataset({}, args.data_config, for_training=False).config
     return test_loaders, data_config
@@ -397,7 +400,7 @@ def onnx(args, model, data_config, model_info):
                       input_names=model_info['input_names'],
                       output_names=model_info['output_names'],
                       dynamic_axes=model_info.get('dynamic_axes', None),
-                      opset_version=11) # 11 for 10_6, 14 for Run 3
+                      opset_version=14) # 11 for 10_6, 14 for Run 3
     _logger.info('ONNX model saved to %s', args.export_onnx)
 
     preprocessing_json = os.path.join(os.path.dirname(args.export_onnx), 'preprocess.json')
