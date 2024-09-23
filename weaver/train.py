@@ -238,7 +238,9 @@ def train_load(args):
         train_range = (0, args.train_val_split)
         val_range = (args.train_val_split, 1)
     _logger.info('Using %d files for training, range: %s' % (len(train_files), str(train_range)))
+    _logger.debug(f'Training files: {train_files}')
     _logger.info('Using %d files for validation, range: %s' % (len(val_files), str(val_range)))
+    _logger.debug(f'Validation files: {val_files}')
 
     if args.demo:
         train_files = train_files[:20]
@@ -341,17 +343,17 @@ def test_load(args):
         for f in filelist:
             total_size += os.path.getsize(f)
         if total_size < size_threshold:
+            # small dataset, load all events from all files
             _logger.info(
                 f"Small dataset: {total_size / 1024 / 1024:.2f} MB < {size_threshold / 1024 / 1024:.2f} MB; load all events from all files"
             )
-            # small dataset, load all events from all files
             fetch_by_files = True
             fetch_step = 1
         else:
-            _logger.info(f"Large dataset: {total_size / 1024 / 1024:.2f} MB >= {size_threshold / 1024 / 1024:.2f} MB; follow the fetch_by_files={fetch_by_files} and fetch_step={fetch_step} settings")
             # large dataset, follow the fetch_by_files and fetch_step settings
             fetch_by_files = args.fetch_by_files
             fetch_step = args.fetch_step
+            _logger.info(f"Large dataset: {total_size / 1024 / 1024:.2f} MB >= {size_threshold / 1024 / 1024:.2f} MB; follow the fetch_by_files={fetch_by_files} and fetch_step={fetch_step} settings")
 
         test_data = SimpleIterDataset(
             {name: filelist},
